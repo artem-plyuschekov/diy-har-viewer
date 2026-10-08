@@ -1,0 +1,7 @@
+.codegraph/
+.build/
+dist/
+.DS_Store
+.swiftpm/
+*.har
+/PLAN.md
