@@ -63,6 +63,15 @@ final class FileStore: ObservableObject {
         defaults.removeObject(forKey: "recentFiles")
     }
 
+    func creationDate(for url: URL) -> Date? {
+        (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate
+    }
+
+    func creationDateDescription(for url: URL) -> String {
+        guard let date = creationDate(for: url) else { return "Дата создания неизвестна" }
+        return "Создан: \(date.formatted(date: .numeric, time: .shortened))"
+    }
+
     func chooseFile() {
         let panel = NSOpenPanel()
         panel.title = "Открыть HTTP-архив"

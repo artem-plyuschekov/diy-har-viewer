@@ -153,6 +153,7 @@ struct ContentView: View {
                         }
                     }
                     ForEach(store.recentURLs, id: \.path) { url in
+                        let created = store.creationDateDescription(for: url)
                         Button { store.open(url) } label: {
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: "doc.text").foregroundStyle(accent)
@@ -162,6 +163,8 @@ struct ContentView: View {
                                             .font(.system(size: 12, weight: .medium))
                                         Text(url.deletingLastPathComponent().lastPathComponent)
                                             .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                                        Text(created)
+                                            .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                                     }
                                     Spacer(minLength: 0)
                                 }
@@ -169,8 +172,8 @@ struct ContentView: View {
                             .padding(9).frame(maxWidth: .infinity, alignment: isSidebarCompact ? .center : .leading)
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain).help(url.path)
-                        .accessibilityLabel("Открыть \(url.lastPathComponent)")
+                        .buttonStyle(.plain).help("\(url.path)\n\(created)")
+                        .accessibilityLabel("Открыть \(url.lastPathComponent). \(created)")
                         .background(store.fileURL == url ? accent.opacity(0.08) : .clear,
                                     in: RoundedRectangle(cornerRadius: 7))
                     }
@@ -204,7 +207,7 @@ struct ContentView: View {
             Menu {
                 if store.recentURLs.isEmpty { Text("Нет недавних файлов") }
                 ForEach(store.recentURLs, id: \.path) { url in
-                    Button(url.lastPathComponent) { store.open(url) }
+                    Button("\(url.lastPathComponent) · \(store.creationDateDescription(for: url))") { store.open(url) }
                 }
             } label: { Image(systemName: "clock.arrow.circlepath") }
                 .menuStyle(.borderlessButton).fixedSize().help("Недавние файлы")
@@ -285,7 +288,8 @@ struct ContentView: View {
                 .frame(minWidth: 420, idealWidth: 610)
                 VStack(spacing: 0) {
                     if let entry = selectedEntry {
-                        RequestDetailView(entry: entry, tab: $detailTab)
+                        RequestDetailView(entry: entry, tab: $detailTab,
+                                          sourceJSON: store.archive?.sourceJSON(for: entry.id))
                     } else {
                         VStack(spacing: 12) {
                             Image(systemName: "cursorarrow.click.2").font(.largeTitle).foregroundStyle(.tertiary)
