@@ -2,11 +2,167 @@ import Foundation
 
 public struct HARArchive: Decodable, Sendable {
     private let log: HARLog
+    private var sourceEntries: [UUID: String] = [:]
     public var entries: [HAREntry] { log.entries }
 
-    public static func decode(_ data: Data) throws -> HARArchive {
-        try JSONDecoder().decode(HARArchive.self, from: data)
+    private enum CodingKeys: String, CodingKey { case log }
+
+    public func sourceJSON(for entryID: UUID) -> String? {
+        sourceEntries[entryID]
     }
+
+    public static func decode(_ data: Data) throws -> HARArchive {
+        var archive = try JSONDecoder().decode(HARArchive.self, from: data)
+        var source = try HARSourceScanner(data)
+        let fragments = try source.entryFragments()
+        guard fragments.count == archive.entries.count else {
+            throw sourceJSONError("Source entry count does not match decoded entries.")
+        }
+        archive.sourceEntries = Dictionary(uniqueKeysWithValues: zip(archive.entries.map(\.id), fragments))
+        return archive
+    }
+}
+
+// JSONDecoder validates the document; this scanner only locates the original entry ranges.
+private struct HARSourceScanner {
+    private let bytes: [UInt8]
+    private var index = 0
+
+    init(_ data: Data) throws {
+        let prefix = Array(data.prefix(4))
+        let encoding: String.Encoding
+        let bomLength: Int
+        if prefix.starts(with: [0, 0, 0xFE, 0xFF]) {
+            encoding = .utf32BigEndian; bomLength = 4
+        } else if prefix.starts(with: [0xFF, 0xFE, 0, 0]) {
+            encoding = .utf32LittleEndian; bomLength = 4
+        } else if prefix.starts(with: [0xFE, 0xFF]) {
+            encoding = .utf16BigEndian; bomLength = 2
+        } else if prefix.starts(with: [0xFF, 0xFE]) {
+            encoding = .utf16LittleEndian; bomLength = 2
+        } else if prefix.starts(with: [0xEF, 0xBB, 0xBF]) {
+            encoding = .utf8; bomLength = 3
+        } else if prefix.count == 4, prefix[0] == 0, prefix[1] == 0 {
+            encoding = .utf32BigEndian; bomLength = 0
+        } else if prefix.count == 4, prefix[1] == 0, prefix[2] == 0, prefix[3] == 0 {
+            encoding = .utf32LittleEndian; bomLength = 0
+        } else if prefix.count == 4, prefix[0] == 0 {
+            encoding = .utf16BigEndian; bomLength = 0
+        } else if prefix.count == 4, prefix[1] == 0 {
+            encoding = .utf16LittleEndian; bomLength = 0
+        } else {
+            encoding = .utf8; bomLength = 0
+        }
+        if encoding == .utf8 {
+            bytes = Array(data.dropFirst(bomLength))
+            return
+        }
+        guard let text = String(data: data.dropFirst(bomLength), encoding: encoding) else {
+            throw sourceJSONError("Could not decode the HAR source text.")
+        }
+        bytes = Array(text.utf8)
+    }
+
+    mutating func entryFragments() throws -> [String] {
+        let log = try memberRange(named: "log", objectAt: 0)
+        let entries = try memberRange(named: "entries", objectAt: log.lowerBound)
+        index = entries.lowerBound
+        try consume(0x5B) // [
+        skipWhitespace()
+        var fragments: [String] = []
+        while index < entries.upperBound {
+            if bytes[index] == 0x5D { return fragments }
+            let start = index
+            guard bytes[index] == 0x7B else { throw sourceJSONError("Source entry is not an object.") }
+            try skipValue()
+            guard index <= entries.upperBound else { throw sourceJSONError("Source entry range exceeds its array.") }
+            fragments.append(String(decoding: bytes[start..<index], as: UTF8.self))
+            skipWhitespace()
+            guard index < entries.upperBound else { throw sourceJSONError("Source entries array is incomplete.") }
+            if bytes[index] == 0x5D { return fragments }
+            try consume(0x2C) // ,
+            skipWhitespace()
+        }
+        throw sourceJSONError("Could not locate the source entries.")
+    }
+
+    private mutating func memberRange(named name: String, objectAt start: Int) throws -> Range<Int> {
+        index = start
+        skipWhitespace()
+        try consume(0x7B) // {
+        skipWhitespace()
+        while index < bytes.count, bytes[index] != 0x7D {
+            let keyStart = index
+            try skipString()
+            let key = try JSONDecoder().decode(String.self, from: Data(bytes[keyStart..<index]))
+            skipWhitespace()
+            try consume(0x3A) // :
+            skipWhitespace()
+            let valueStart = index
+            try skipValue()
+            if key == name { return valueStart..<index }
+            skipWhitespace()
+            if index < bytes.count, bytes[index] == 0x7D { break }
+            try consume(0x2C) // ,
+            skipWhitespace()
+        }
+        throw sourceJSONError("Could not locate source member \(name).")
+    }
+
+    private mutating func skipValue() throws {
+        guard index < bytes.count else { throw sourceJSONError("Missing source value.") }
+        if bytes[index] == 0x22 { try skipString(); return }
+        if bytes[index] == 0x7B || bytes[index] == 0x5B {
+            var depth = 0
+            while index < bytes.count {
+                switch bytes[index] {
+                case 0x22:
+                    try skipString()
+                    continue
+                case 0x7B, 0x5B: depth += 1
+                case 0x7D, 0x5D: depth -= 1
+                default: break
+                }
+                index += 1
+                if depth == 0 { return }
+            }
+            throw sourceJSONError("Incomplete source container.")
+        }
+        let start = index
+        while index < bytes.count, ![0x2C, 0x7D, 0x5D, 0x20, 0x09, 0x0A, 0x0D].contains(bytes[index]) {
+            index += 1
+        }
+        guard index > start else { throw sourceJSONError("Missing source value.") }
+    }
+
+    private mutating func skipString() throws {
+        try consume(0x22) // "
+        while index < bytes.count {
+            let byte = bytes[index]
+            index += 1
+            if byte == 0x22 { return }
+            if byte == 0x5C {
+                guard index < bytes.count else { throw sourceJSONError("Incomplete source escape.") }
+                index += 1
+            }
+        }
+        throw sourceJSONError("Incomplete source string.")
+    }
+
+    private mutating func skipWhitespace() {
+        while index < bytes.count, [0x20, 0x09, 0x0A, 0x0D].contains(bytes[index]) { index += 1 }
+    }
+
+    private mutating func consume(_ byte: UInt8) throws {
+        guard index < bytes.count, bytes[index] == byte else {
+            throw sourceJSONError("Unexpected token in the HAR source.")
+        }
+        index += 1
+    }
+}
+
+private func sourceJSONError(_ description: String) -> DecodingError {
+    .dataCorrupted(.init(codingPath: [], debugDescription: description))
 }
 
 private struct HARLog: Decodable, Sendable {

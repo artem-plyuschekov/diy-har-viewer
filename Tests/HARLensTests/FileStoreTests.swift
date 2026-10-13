@@ -53,6 +53,44 @@ final class FileStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testRecentFileCreationDateSurvivesHistoryReload() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let suite = "HARLensTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let file = folder.appendingPathComponent("created-earlier.har")
+        try Data(#"{"log":{"entries":[]}}"#.utf8).write(to: file)
+        let created = Date(timeIntervalSince1970: 1_577_836_800)
+        let modified = Date(timeIntervalSince1970: 1_609_459_200)
+        try FileManager.default.setAttributes([.creationDate: created, .modificationDate: modified],
+                                              ofItemAtPath: file.path)
+        let store = FileStore(defaults: defaults)
+        await store.open(file).value
+
+        let restored = FileStore(defaults: defaults)
+        let recent = try XCTUnwrap(restored.recentURLs.first)
+        let date = try XCTUnwrap(restored.creationDate(for: recent))
+        XCTAssertEqual(date.timeIntervalSince1970, created.timeIntervalSince1970, accuracy: 1)
+        XCTAssertNotEqual(date, modified)
+        XCTAssertEqual(restored.recentURLs, [file])
+    }
+
+    @MainActor
+    func testMissingRecentFileHasNoCreationDateAndRemainsInHistory() throws {
+        let suite = "HARLensTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).har")
+        defaults.set([missing.path], forKey: "recentFiles")
+        let store = FileStore(defaults: defaults)
+
+        XCTAssertNil(store.creationDate(for: missing))
+        XCTAssertEqual(store.recentURLs, [missing])
+    }
+
+    @MainActor
     func testFailedOpenPreservesDocumentAndHistory() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

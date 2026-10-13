@@ -4,6 +4,7 @@ import HARCore
 struct RequestDetailView: View {
     let entry: HAREntry
     @Binding var tab: DetailTab
+    let sourceJSON: String?
 
     enum DetailTab: String, CaseIterable {
         case overview = "Обзор", request = "Запрос", response = "Ответ", timing = "Время"
@@ -26,6 +27,15 @@ struct RequestDetailView: View {
                 }
                 Text(entry.request.url).font(.system(size: 12, design: .monospaced))
                     .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                Button {
+                    if let sourceJSON { copy(sourceJSON) }
+                } label: {
+                    Label("Копировать запись HAR", systemImage: "doc.on.doc")
+                }
+                .controlSize(.small)
+                .disabled(sourceJSON == nil)
+                .help("Скопировать исходную запись целиком: запрос, ответ и время")
+                .accessibilityLabel("Копировать всю запись HAR")
                 Picker("Подробности", selection: $tab) {
                     ForEach(DetailTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }.pickerStyle(.segmented)
