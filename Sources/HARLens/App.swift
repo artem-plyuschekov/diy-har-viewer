@@ -112,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(empty)
         } else {
             for url in store.recentURLs {
-                let entry = item(url.lastPathComponent, #selector(openRecent(_:)))
+                let entry = item("\(url.lastPathComponent) · \(store.creationDateDescription(for: url))", #selector(openRecent(_:)))
                 entry.target = self
                 entry.representedObject = url
                 entry.toolTip = url.path

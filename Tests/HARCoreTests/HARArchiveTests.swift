@@ -3,6 +3,87 @@ import XCTest
 @testable import HARCore
 
 final class HARArchiveTests: XCTestCase {
+    func testSourceJSONPreservesCompleteOriginalEntriesByIdentity() throws {
+        let first = #"""
+        {
+          "request": {"method":"POST","url":"https://demo.example/","postData":{"text":"quoted \"value\", {[}] \\ path"}},
+          "response": {"status":200,"content":{"text":"Пример 🦊"},"_unknown":{"array":[{},[true,null,"}"]]}},
+          "timings": {"wait":1.234567890123456789},
+          "_export": {"huge":1e400,"precise":12345678901234567890.12345678901234567890,"negativeZero":-0,"escaped":"\u0061"}
+        }
+        """#
+        let second = #"{"request":{"method":"GET","url":"https://demo.example/"},"response":{"status":201},"_export":2}"#
+        let archive = try decode("{\"log\":{\"entries\":[ \(first),\n\(second) ]}}")
+
+        XCTAssertEqual(archive.sourceJSON(for: archive.entries[0].id), first)
+        XCTAssertEqual(archive.sourceJSON(for: archive.entries[1].id), second)
+        XCTAssertNil(archive.sourceJSON(for: UUID()))
+    }
+
+    func testSourceJSONFindsEscapedKeysAndFirstDuplicateMembers() throws {
+        let first = #"{"request":{"method":"GET","url":"https://demo.example/first"},"response":{"status":200}}"#
+        let second = #"{"request":{"method":"GET","url":"https://demo.example/second"},"response":{"status":201}}"#
+        let archive = try decode(#"{"entries":[null],"other":{"log":{"entries":[]}},"l\u006fg":{"unrelated":{"entries":[null]},"ent\u0072ies":["# + first + #"],"entries":["# + second + #"]},"log":{"entries":["# + second + #"]}}"#)
+
+        XCTAssertEqual(archive.entries.first?.request.url, "https://demo.example/first")
+        XCTAssertEqual(archive.sourceJSON(for: try XCTUnwrap(archive.entries.first).id), first)
+    }
+
+    func testSourceJSONAcceptsInvalidUTF8InIgnoredFieldOutsideEntries() throws {
+        let fragment = #"{"request":{"method":"GET","url":"https://demo.example/"},"response":{"status":200},"_export":1.234567890123456789}"#
+        var data = Data("{\"ignored\":\"".utf8)
+        data.append(0xFF)
+        data.append(Data("\",\"log\":{\"entries\":[\(fragment)]}}".utf8))
+
+        let nativeArchive = try JSONDecoder().decode(HARArchive.self, from: data)
+        XCTAssertEqual(nativeArchive.entries.count, 1)
+
+        let archive = try HARArchive.decode(data)
+        let source = try XCTUnwrap(archive.sourceJSON(for: try XCTUnwrap(archive.entries.first).id))
+        XCTAssertEqual(Data(source.utf8), Data(fragment.utf8))
+    }
+
+    func testSourceJSONPreservesSupportedUnicodeEncodings() throws {
+        let fragment = #"{"request":{"method":"GET","url":"https://demo.example/"},"response":{"status":200},"comment":"Пример 🦊 é"}"#
+        let json = " \n{\"log\":{\"entries\":[\(fragment)]}}"
+        let encodings: [(String.Encoding, [UInt8])] = [
+            (.utf8, [0xEF, 0xBB, 0xBF]), (.utf16LittleEndian, [0xFF, 0xFE]),
+            (.utf16BigEndian, [0xFE, 0xFF]), (.utf32LittleEndian, [0xFF, 0xFE, 0, 0]),
+            (.utf32BigEndian, [0, 0, 0xFE, 0xFF])
+        ]
+        for (encoding, bom) in encodings {
+            let encoded = try XCTUnwrap(json.data(using: encoding))
+            for prefix in [Data(), Data(bom)] {
+                let data = prefix + encoded
+                switch Result(catching: { try JSONDecoder().decode(HARArchive.self, from: data) }) {
+                case .success:
+                    let archive = try HARArchive.decode(data)
+                    XCTAssertEqual(archive.sourceJSON(for: try XCTUnwrap(archive.entries.first).id), fragment, "Encoding: \(encoding), BOM: \(!prefix.isEmpty)")
+                case .failure:
+                    XCTAssertThrowsError(try HARArchive.decode(data), "Preserve native JSONDecoder rejection for \(encoding), BOM: \(!prefix.isEmpty)")
+                }
+            }
+        }
+    }
+
+    func testDirectDecodableRemainsAvailableWithoutSourceJSON() throws {
+        let archive = try JSONDecoder().decode(HARArchive.self, from: Data(#"{"log":{"entries":[{"request":{"method":"GET","url":"https://demo.example/"},"response":{"status":200}}]}}"#.utf8))
+        XCTAssertEqual(archive.entries.count, 1)
+        XCTAssertNil(archive.sourceJSON(for: try XCTUnwrap(archive.entries.first).id))
+    }
+
+    func testSourceJSONPreservesNativeTrailingCommaAcceptance() throws {
+        let fragment = #"{"request":{"method":"GET","url":"https://demo.example/",},"response":{"status":200},}"#
+        let data = Data("{\"log\":{\"entries\":[\(fragment),],},}".utf8)
+        switch Result(catching: { try JSONDecoder().decode(HARArchive.self, from: data) }) {
+        case .success:
+            let archive = try HARArchive.decode(data)
+            XCTAssertEqual(archive.sourceJSON(for: try XCTUnwrap(archive.entries.first).id), fragment)
+        case .failure:
+            XCTAssertThrowsError(try HARArchive.decode(data))
+        }
+    }
+
     func testMinimalEntriesHaveStableDistinctIdentities() throws {
         let archive = try decode(#"{"log":{"entries":[{"request":{"method":"GET","url":"https://demo.example/"},"response":{"status":200}},{"request":{"method":"GET","url":"https://demo.example/"},"response":{"status":200}}]}}"#)
 
