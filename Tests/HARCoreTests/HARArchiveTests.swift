@@ -29,6 +29,20 @@ final class HARArchiveTests: XCTestCase {
         XCTAssertEqual(archive.sourceJSON(for: try XCTUnwrap(archive.entries.first).id), first)
     }
 
+    func testSourceJSONAcceptsInvalidUTF8InIgnoredFieldOutsideEntries() throws {
+        let fragment = #"{"request":{"method":"GET","url":"https://demo.example/"},"response":{"status":200},"_export":1.234567890123456789}"#
+        var data = Data("{\"ignored\":\"".utf8)
+        data.append(0xFF)
+        data.append(Data("\",\"log\":{\"entries\":[\(fragment)]}}".utf8))
+
+        let nativeArchive = try JSONDecoder().decode(HARArchive.self, from: data)
+        XCTAssertEqual(nativeArchive.entries.count, 1)
+
+        let archive = try HARArchive.decode(data)
+        let source = try XCTUnwrap(archive.sourceJSON(for: try XCTUnwrap(archive.entries.first).id))
+        XCTAssertEqual(Data(source.utf8), Data(fragment.utf8))
+    }
+
     func testSourceJSONPreservesSupportedUnicodeEncodings() throws {
         let fragment = #"{"request":{"method":"GET","url":"https://demo.example/"},"response":{"status":200},"comment":"Пример 🦊 é"}"#
         let json = " \n{\"log\":{\"entries\":[\(fragment)]}}"

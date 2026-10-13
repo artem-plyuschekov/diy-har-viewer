@@ -69,7 +69,7 @@ final class FileStore: ObservableObject {
 
     func creationDateDescription(for url: URL) -> String {
         guard let date = creationDate(for: url) else { return "Дата создания неизвестна" }
-        return "Создан: \(date.formatted(date: .numeric, time: .shortened))"
+        return date.formatted(date: .numeric, time: .shortened)
     }
 
     func chooseFile() {

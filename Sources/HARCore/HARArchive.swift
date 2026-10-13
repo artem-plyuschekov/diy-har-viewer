@@ -53,6 +53,10 @@ private struct HARSourceScanner {
         } else {
             encoding = .utf8; bomLength = 0
         }
+        if encoding == .utf8 {
+            bytes = Array(data.dropFirst(bomLength))
+            return
+        }
         guard let text = String(data: data.dropFirst(bomLength), encoding: encoding) else {
             throw sourceJSONError("Could not decode the HAR source text.")
         }
